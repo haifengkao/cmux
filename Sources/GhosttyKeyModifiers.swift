@@ -72,3 +72,24 @@ nonisolated func cmuxTranslationModifierFlags(
     }
     return translationMods
 }
+
+enum CmuxOptionKeyInputRoute: Equatable {
+    case appKit
+    case ghostty(text: String?)
+}
+
+nonisolated func cmuxOptionKeyInputRoute(
+    event: NSEvent,
+    originalMods: ghostty_input_mods_e,
+    ghosttyTranslationMods: ghostty_input_mods_e,
+    translationFlags: NSEvent.ModifierFlags
+) -> CmuxOptionKeyInputRoute {
+    let originalHasAlt = (originalMods.rawValue & GHOSTTY_MODS_ALT.rawValue) != 0
+    let translationHasAlt = (ghosttyTranslationMods.rawValue & GHOSTTY_MODS_ALT.rawValue) != 0
+    guard originalHasAlt, !translationHasAlt else { return .appKit }
+
+    let translatedText = event.characters(byApplyingModifiers: translationFlags)
+        .flatMap { $0.isEmpty ? nil : $0 }
+        ?? event.charactersIgnoringModifiers
+    return .ghostty(text: translatedText)
+}

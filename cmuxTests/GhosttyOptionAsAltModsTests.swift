@@ -140,6 +140,78 @@ import Testing
         #expect(!translated.contains(.option))
     }
 
+    // MARK: Strict Option-as-Alt input routing
+
+    @Test func optionAsAltRoutesEAndNDirectlyWithUnmodifiedText() throws {
+        let cases: [(UInt16, String)] = [(14, "e"), (45, "n")]
+
+        for (keyCode, unmodifiedText) in cases {
+            let event = try #require(NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [.option],
+                timestamp: 1,
+                windowNumber: 0,
+                context: nil,
+                characters: "",
+                charactersIgnoringModifiers: unmodifiedText,
+                isARepeat: false,
+                keyCode: keyCode
+            ))
+
+            #expect(cmuxOptionKeyInputRoute(
+                event: event,
+                originalMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_ALT.rawValue),
+                ghosttyTranslationMods: GHOSTTY_MODS_NONE,
+                translationFlags: []
+            ) == .ghostty(text: unmodifiedText))
+        }
+    }
+
+    @Test func optionRetainedForCompositionUsesAppKit() throws {
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.option],
+            timestamp: 1,
+            windowNumber: 0,
+            context: nil,
+            characters: "…",
+            charactersIgnoringModifiers: ";",
+            isARepeat: false,
+            keyCode: 41
+        ))
+
+        #expect(cmuxOptionKeyInputRoute(
+            event: event,
+            originalMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_ALT.rawValue),
+            ghosttyTranslationMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_ALT.rawValue),
+            translationFlags: [.option]
+        ) == .appKit)
+    }
+
+    @Test func nonOptionInputUsesAppKit() throws {
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.shift],
+            timestamp: 1,
+            windowNumber: 0,
+            context: nil,
+            characters: "E",
+            charactersIgnoringModifiers: "e",
+            isARepeat: false,
+            keyCode: 14
+        ))
+
+        #expect(cmuxOptionKeyInputRoute(
+            event: event,
+            originalMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_SHIFT.rawValue),
+            ghosttyTranslationMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_SHIFT.rawValue),
+            translationFlags: [.shift]
+        ) == .appKit)
+    }
+
     // MARK: Option composition per keyboard layout (issue #5993 acceptance)
 
     @Test func usLayoutOptionSemicolonComposesEllipsis() throws {
