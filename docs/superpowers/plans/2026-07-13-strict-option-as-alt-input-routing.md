@@ -4,9 +4,9 @@
 
 **Goal:** Route every terminal Option key that Ghostty configures as Alt directly to embedded Ghostty, bypassing AppKit dead-key and text interpretation.
 
-**Architecture:** Add a pure modifier-decision helper beside the existing Ghostty modifier conversion functions. In `GhosttyNSView.keyDown(with:)`, use Ghostty's effective translation modifiers to select a strict direct-send path before `interpretKeyEvents`; retain the current AppKit path when Ghostty keeps Option for composition.
+**Architecture:** Add a tested production routing value beside the existing Ghostty modifier conversion functions. In `GhosttyNSView.keyDown(with:)`, use that value to either send the translated key directly to Ghostty and return, or continue through the existing AppKit/IME path.
 
-**Tech Stack:** Swift, AppKit `NSEvent`, GhosttyKit C API, XCTest, Swift Testing, Xcode `cmux-unit` scheme.
+**Tech Stack:** Swift, AppKit `NSEvent`, GhosttyKit C API, Swift Testing, XCTest, Xcode `cmux-unit` scheme.
 
 ## Global Constraints
 
@@ -14,48 +14,97 @@
 - A qualifying Option event never falls back to AppKit, even when Ghostty reports it as unhandled.
 - Option sides that Ghostty does not treat as Alt retain existing AppKit dead-key composition.
 - Non-Option IME input and cmux application-level shortcut precedence remain unchanged.
-- Reuse existing Ghostty key construction and send helpers; do not change Ghostty's configuration format or encoding.
+- No DEBUG-only routing overrides or test-only production APIs.
 
 ---
 
-### Task 1: Identify strict Option-as-Alt events
+### Task 1: Model and test the Option input route
 
 **Files:**
 - Modify: `Sources/GhosttyKeyModifiers.swift`
 - Test: `cmuxTests/GhosttyOptionAsAltModsTests.swift`
 
 **Interfaces:**
-- Consumes: original `ghostty_input_mods_e` and the value returned by `ghostty_surface_key_translation_mods`.
-- Produces: `cmuxShouldRouteOptionAsAltDirectly(originalMods:ghosttyTranslationMods:) -> Bool` for `GhosttyNSView.keyDown(with:)`.
+- Consumes: an `NSEvent`, original `ghostty_input_mods_e`, Ghostty translation modifiers, and translated AppKit modifier flags.
+- Produces: `CmuxOptionKeyInputRoute` and `cmuxOptionKeyInputRoute(event:originalMods:ghosttyTranslationMods:translationFlags:)`.
 
-- [ ] **Step 1: Write failing modifier-decision tests**
+- [ ] **Step 1: Write failing routing tests**
 
-Append these tests to `GhosttyOptionAsAltModsTests`:
+Append these helpers and tests to `GhosttyOptionAsAltModsTests`:
 
 ```swift
-    @Test func optionRemovedFromTranslationRoutesDirectlyToGhostty() {
-        #expect(cmuxShouldRouteOptionAsAltDirectly(
-            originalMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_ALT.rawValue),
-            ghosttyTranslationMods: GHOSTTY_MODS_NONE
-        ))
+    @Test func optionAsAltRoutesEAndNDirectlyWithUnmodifiedText() throws {
+        let cases: [(UInt16, String)] = [(14, "e"), (45, "n")]
+
+        for (keyCode, unmodifiedText) in cases {
+            let event = try #require(NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [.option],
+                timestamp: 1,
+                windowNumber: 0,
+                context: nil,
+                characters: "",
+                charactersIgnoringModifiers: unmodifiedText,
+                isARepeat: false,
+                keyCode: keyCode
+            ))
+
+            #expect(cmuxOptionKeyInputRoute(
+                event: event,
+                originalMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_ALT.rawValue),
+                ghosttyTranslationMods: GHOSTTY_MODS_NONE,
+                translationFlags: []
+            ) == .ghostty(text: unmodifiedText))
+        }
     }
 
-    @Test func optionRetainedForCompositionDoesNotRouteDirectly() {
-        #expect(!cmuxShouldRouteOptionAsAltDirectly(
-            originalMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_ALT.rawValue),
-            ghosttyTranslationMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_ALT.rawValue)
+    @Test func optionRetainedForCompositionUsesAppKit() throws {
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.option],
+            timestamp: 1,
+            windowNumber: 0,
+            context: nil,
+            characters: "…",
+            charactersIgnoringModifiers: ";",
+            isARepeat: false,
+            keyCode: 41
         ))
+
+        #expect(cmuxOptionKeyInputRoute(
+            event: event,
+            originalMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_ALT.rawValue),
+            ghosttyTranslationMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_ALT.rawValue),
+            translationFlags: [.option]
+        ) == .appKit)
     }
 
-    @Test func nonOptionInputNeverRoutesThroughStrictAltPath() {
-        #expect(!cmuxShouldRouteOptionAsAltDirectly(
+    @Test func nonOptionInputUsesAppKit() throws {
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.shift],
+            timestamp: 1,
+            windowNumber: 0,
+            context: nil,
+            characters: "E",
+            charactersIgnoringModifiers: "e",
+            isARepeat: false,
+            keyCode: 14
+        ))
+
+        #expect(cmuxOptionKeyInputRoute(
+            event: event,
             originalMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_SHIFT.rawValue),
-            ghosttyTranslationMods: GHOSTTY_MODS_NONE
-        ))
+            ghosttyTranslationMods: ghostty_input_mods_e(rawValue: GHOSTTY_MODS_SHIFT.rawValue),
+            translationFlags: [.shift]
+        ) == .appKit)
     }
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm the expected failure**
+- [ ] **Step 2: Run the focused tests and confirm the expected RED state**
 
 ```bash
 xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
@@ -64,32 +113,42 @@ xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
   -only-testing:cmuxTests/GhosttyOptionAsAltModsTests test
 ```
 
-Expected: compilation fails because `cmuxShouldRouteOptionAsAltDirectly` is not defined.
+Expected: compilation fails because `CmuxOptionKeyInputRoute` and `cmuxOptionKeyInputRoute` do not exist.
 
-- [ ] **Step 3: Add the pure routing decision helper**
+- [ ] **Step 3: Implement the minimal production routing value**
 
-Append this function to `Sources/GhosttyKeyModifiers.swift`:
+Append this code to `Sources/GhosttyKeyModifiers.swift`:
 
 ```swift
-/// Returns true when the physical event contains Option but libghostty has
-/// removed Alt from text translation because that Option side acts as Alt.
-nonisolated func cmuxShouldRouteOptionAsAltDirectly(
+enum CmuxOptionKeyInputRoute: Equatable {
+    case appKit
+    case ghostty(text: String?)
+}
+
+nonisolated func cmuxOptionKeyInputRoute(
+    event: NSEvent,
     originalMods: ghostty_input_mods_e,
-    ghosttyTranslationMods: ghostty_input_mods_e
-) -> Bool {
+    ghosttyTranslationMods: ghostty_input_mods_e,
+    translationFlags: NSEvent.ModifierFlags
+) -> CmuxOptionKeyInputRoute {
     let originalHasAlt = (originalMods.rawValue & GHOSTTY_MODS_ALT.rawValue) != 0
     let translationHasAlt = (ghosttyTranslationMods.rawValue & GHOSTTY_MODS_ALT.rawValue) != 0
-    return originalHasAlt && !translationHasAlt
+    guard originalHasAlt, !translationHasAlt else { return .appKit }
+
+    let translatedText = event.characters(byApplyingModifiers: translationFlags)
+        .flatMap { $0.isEmpty ? nil : $0 }
+        ?? event.charactersIgnoringModifiers
+    return .ghostty(text: translatedText)
 }
 ```
 
-- [ ] **Step 4: Run the focused tests and confirm they pass**
+- [ ] **Step 4: Run the focused tests and confirm GREEN**
 
 Run the command from Step 2.
 
-Expected: `GhosttyOptionAsAltModsTests` passes, including the three new routing-decision tests.
+Expected: `GhosttyOptionAsAltModsTests` passes with 18 tests.
 
-- [ ] **Step 5: Commit the decision helper**
+- [ ] **Step 5: Commit the routing model**
 
 ```bash
 git add Sources/GhosttyKeyModifiers.swift cmuxTests/GhosttyOptionAsAltModsTests.swift
@@ -98,215 +157,40 @@ git commit -m "test: define strict Option-as-Alt routing"
 
 ---
 
-### Task 2: Bypass AppKit for strict Option-as-Alt keyDown events
+### Task 2: Apply the route before AppKit interpretation
 
 **Files:**
 - Modify: `Sources/GhosttyTerminalView.swift`
-- Test: `cmuxTests/CJKIMEInputTests.swift`
 
 **Interfaces:**
-- Consumes: `cmuxShouldRouteOptionAsAltDirectly(originalMods:ghosttyTranslationMods:)` from Task 1, `ghosttyKeyEvent(for:surface:)`, `textForKeyEvent(_:)`, `shouldSendText(_:)`, and `sendGhosttyKey(_:_:)`.
-- Produces: direct keyDown routing plus DEBUG-only `debugGhosttyTranslationModsOverride` for deterministic regression tests.
+- Consumes: `cmuxOptionKeyInputRoute(event:originalMods:ghosttyTranslationMods:translationFlags:)`, `ghosttyKeyEvent(for:surface:)`, `shouldSendText(_:)`, and `sendGhosttyKey(_:_:)`.
+- Produces: a strict direct-send branch before `textInputInterpretationEvent` and `interpretKeyEvents`.
 
-- [ ] **Step 1: Add failing direct-routing regression tests**
+- [ ] **Step 1: Insert the tested routing decision before AppKit**
 
-Append this DEBUG-only XCTest class to `cmuxTests/CJKIMEInputTests.swift`:
-
-```swift
-#if DEBUG
-@MainActor
-final class StrictOptionAsAltRoutingTests: XCTestCase {
-    func testStrictOptionAsAltBypassesAppKitAndSendsUnmodifiedText() throws {
-        let terminal = try makeTerminal()
-        defer { terminal.window.orderOut(nil) }
-
-        let previousTranslationOverride = GhosttyNSView.debugGhosttyTranslationModsOverride
-        let previousObserver = GhosttyNSView.debugGhosttySurfaceKeyEventObserver
-        let previousInterpretHook = cjkIMEInterpretKeyEventsHook
-        defer {
-            GhosttyNSView.debugGhosttyTranslationModsOverride = previousTranslationOverride
-            GhosttyNSView.debugGhosttySurfaceKeyEventObserver = previousObserver
-            cjkIMEInterpretKeyEventsHook = previousInterpretHook
-            withExtendedLifetime(terminal.surface) {}
-        }
-
-        GhosttyNSView.debugGhosttyTranslationModsOverride = { mods in
-            let altMask = GHOSTTY_MODS_ALT.rawValue | GHOSTTY_MODS_ALT_RIGHT.rawValue
-            return ghostty_input_mods_e(rawValue: mods.rawValue & ~altMask)
-        }
-
-        installCJKIMEInterpretKeyEventsSwizzle()
-        var interpretedKeyCodes: [UInt16] = []
-        cjkIMEInterpretKeyEventsHook = { candidate, events in
-            guard candidate === terminal.view else { return false }
-            interpretedKeyCodes.append(contentsOf: events.map(\.keyCode))
-            return true
-        }
-
-        var forwardedText: [String] = []
-        var forwardedMods: [ghostty_input_mods_e] = []
-        GhosttyNSView.debugGhosttySurfaceKeyEventObserver = { keyEvent in
-            previousObserver?(keyEvent)
-            guard keyEvent.action == GHOSTTY_ACTION_PRESS,
-                  keyEvent.keycode == 14 || keyEvent.keycode == 45 else { return }
-            forwardedMods.append(keyEvent.mods)
-            forwardedText.append(keyEvent.text.map(String.init(cString:)) ?? "")
-        }
-
-        for (keyCode, unmodifiedText) in [(UInt16(14), "e"), (UInt16(45), "n")] {
-            let event = try XCTUnwrap(NSEvent.keyEvent(
-                with: .keyDown,
-                location: .zero,
-                modifierFlags: [.option],
-                timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: terminal.window.windowNumber,
-                context: nil,
-                characters: "",
-                charactersIgnoringModifiers: unmodifiedText,
-                isARepeat: false,
-                keyCode: keyCode
-            ))
-            terminal.view.keyDown(with: event)
-        }
-
-        XCTAssertEqual(interpretedKeyCodes, [], "Strict Option-as-Alt must bypass AppKit")
-        XCTAssertEqual(forwardedText, ["e", "n"])
-        XCTAssertEqual(forwardedMods.count, 2)
-        XCTAssertTrue(forwardedMods.allSatisfy {
-            ($0.rawValue & GHOSTTY_MODS_ALT.rawValue) != 0
-        })
-    }
-
-    func testOptionRetainedByGhosttyStillUsesAppKit() throws {
-        let terminal = try makeTerminal()
-        defer { terminal.window.orderOut(nil) }
-
-        let previousTranslationOverride = GhosttyNSView.debugGhosttyTranslationModsOverride
-        let previousInterpretHook = cjkIMEInterpretKeyEventsHook
-        defer {
-            GhosttyNSView.debugGhosttyTranslationModsOverride = previousTranslationOverride
-            cjkIMEInterpretKeyEventsHook = previousInterpretHook
-            withExtendedLifetime(terminal.surface) {}
-        }
-
-        GhosttyNSView.debugGhosttyTranslationModsOverride = { $0 }
-        installCJKIMEInterpretKeyEventsSwizzle()
-        var interpreted = false
-        cjkIMEInterpretKeyEventsHook = { candidate, _ in
-            guard candidate === terminal.view else { return false }
-            interpreted = true
-            return true
-        }
-
-        let event = try XCTUnwrap(NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: [.option],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: terminal.window.windowNumber,
-            context: nil,
-            characters: "…",
-            charactersIgnoringModifiers: ";",
-            isARepeat: false,
-            keyCode: 41
-        ))
-        terminal.view.keyDown(with: event)
-
-        XCTAssertTrue(interpreted, "An Option side retained for composition must still use AppKit")
-    }
-
-    private struct HostedTerminal {
-        let surface: TerminalSurface
-        let view: GhosttyNSView
-        let window: NSWindow
-    }
-
-    private func makeTerminal() throws -> HostedTerminal {
-        _ = NSApplication.shared
-        let surface = TerminalSurface(
-            tabId: UUID(),
-            context: GHOSTTY_SURFACE_CONTEXT_SPLIT,
-            configTemplate: nil,
-            workingDirectory: nil
-        )
-        let hostedView = surface.hostedView
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 240),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        let contentView = try XCTUnwrap(window.contentView)
-        hostedView.frame = contentView.bounds
-        hostedView.autoresizingMask = [.width, .height]
-        contentView.addSubview(hostedView)
-        window.makeKeyAndOrderFront(nil)
-        window.displayIfNeeded()
-        contentView.layoutSubtreeIfNeeded()
-        hostedView.setVisibleInUI(true)
-        hostedView.setActive(true)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        let view = try XCTUnwrap(findGhosttyNSView(in: hostedView))
-        XCTAssertTrue(window.makeFirstResponder(view))
-        return HostedTerminal(surface: surface, view: view, window: window)
-    }
-}
-#endif
-```
-
-- [ ] **Step 2: Run the new tests and confirm the expected failure**
-
-```bash
-xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
-  -derivedDataPath build/strict-option-as-alt-tests -destination 'platform=macOS' \
-  CMUX_SKIP_ZIG_BUILD=1 \
-  -only-testing:cmuxTests/StrictOptionAsAltRoutingTests test
-```
-
-Expected: compilation fails because `debugGhosttyTranslationModsOverride` does not exist. After adding only the test seam, the first test fails because AppKit receives key codes 14 and 45.
-
-- [ ] **Step 3: Add deterministic translation-modifier injection for DEBUG tests**
-
-Add beside the existing debug observers in `GhosttyNSView`:
+In `keyDown(with:)`, retain the original Ghostty modifiers and use them for translation:
 
 ```swift
-    @MainActor static var debugGhosttyTranslationModsOverride:
-        ((ghostty_input_mods_e) -> ghostty_input_mods_e)?
+        let originalMods = modsFromEvent(event)
+        let translationModsGhostty = ghostty_surface_key_translation_mods(surface, originalMods)
 ```
 
-Add this helper near `ghosttyKeyEvent(for:surface:)`:
+After constructing `translationEvent`, switch on the tested route before constructing `textInputEvent`:
 
 ```swift
-    private func ghosttyTranslationMods(
-        for surface: ghostty_surface_t,
-        originalMods: ghostty_input_mods_e
-    ) -> ghostty_input_mods_e {
-#if DEBUG
-        if let override = Self.debugGhosttyTranslationModsOverride {
-            return override(originalMods)
-        }
-#endif
-        return ghostty_surface_key_translation_mods(surface, originalMods)
-    }
-```
-
-Replace both direct calls to `ghostty_surface_key_translation_mods(surface, ...)` in `keyDown(with:)` and `ghosttyKeyEvent(for:surface:)` with this helper.
-
-- [ ] **Step 4: Add the strict direct-send path before AppKit interpretation**
-
-In `keyDown(with:)`, retain `originalMods`, compute translated modifiers and `translationEvent` once, then insert this block before `textInputInterpretationEvent` and `interpretKeyEvents`:
-
-```swift
-        if cmuxShouldRouteOptionAsAltDirectly(
+        switch cmuxOptionKeyInputRoute(
+            event: event,
             originalMods: originalMods,
-            ghosttyTranslationMods: translationModsGhostty
+            ghosttyTranslationMods: translationModsGhostty,
+            translationFlags: translationMods
         ) {
+        case .appKit:
+            break
+        case .ghostty(let directText):
             var keyEvent = ghosttyKeyEvent(for: event, surface: surface)
             keyEvent.action = action
             keyEvent.composing = false
 
-            let directText = textForKeyEvent(translationEvent)
-                ?? event.charactersIgnoringModifiers
             if let directText, shouldSendText(directText) {
                 directText.withCString { ptr in
                     keyEvent.text = ptr
@@ -320,46 +204,25 @@ In `keyDown(with:)`, retain `originalMods`, compute translated modifiers and `tr
         }
 ```
 
-Define `originalMods` before translation and use it for the translation query:
+The unconditional return is required: strict Option-as-Alt input must not fall back to AppKit when Ghostty returns false.
 
-```swift
-        let originalMods = modsFromEvent(event)
-        let translationModsGhostty = ghosttyTranslationMods(
-            for: surface,
-            originalMods: originalMods
-        )
-```
-
-Do not check Ghostty's handled return value and do not fall back to `interpretKeyEvents` for this branch.
-
-- [ ] **Step 5: Run focused strict-routing and modifier tests**
+- [ ] **Step 2: Run routing and neighboring regression tests**
 
 ```bash
 xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
   -derivedDataPath build/strict-option-as-alt-tests -destination 'platform=macOS' \
   CMUX_SKIP_ZIG_BUILD=1 \
-  -only-testing:cmuxTests/StrictOptionAsAltRoutingTests \
-  -only-testing:cmuxTests/GhosttyOptionAsAltModsTests test
-```
-
-Expected: both suites pass. The strict test observes text `e` and `n` with raw Alt while observing zero AppKit interpretations.
-
-- [ ] **Step 6: Run neighboring IME and dead-key regressions**
-
-```bash
-xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
-  -derivedDataPath build/strict-option-as-alt-tests -destination 'platform=macOS' \
-  CMUX_SKIP_ZIG_BUILD=1 \
+  -only-testing:cmuxTests/GhosttyOptionAsAltModsTests \
   -only-testing:cmuxTests/DeadKeyCompositionRegressionTests \
   -only-testing:cmuxTests/TraditionalChineseIMENumpadRegressionTests test
 ```
 
-Expected: both neighboring suites pass, proving that Option retained for composition and non-Option CJK IME input are unchanged.
+Expected: all selected suites pass. The routing suite proves E/N direct routing and the existing suites prove retained Option composition and non-Option IME behavior.
 
-- [ ] **Step 7: Commit the direct routing implementation**
+- [ ] **Step 3: Commit the direct routing implementation**
 
 ```bash
-git add Sources/GhosttyTerminalView.swift cmuxTests/CJKIMEInputTests.swift
+git add Sources/GhosttyTerminalView.swift
 git commit -m "fix: route Option-as-Alt directly to Ghostty"
 ```
 
@@ -371,13 +234,12 @@ git commit -m "fix: route Option-as-Alt directly to Ghostty"
 - Verify: `Sources/GhosttyKeyModifiers.swift`
 - Verify: `Sources/GhosttyTerminalView.swift`
 - Verify: `cmuxTests/GhosttyOptionAsAltModsTests.swift`
-- Verify: `cmuxTests/CJKIMEInputTests.swift`
 
 **Interfaces:**
-- Consumes: the completed direct routing implementation from Tasks 1 and 2.
-- Produces: a clean build, whitespace validation, and a clean committed worktree.
+- Consumes: completed routing model and keyDown integration.
+- Produces: a clean build and committed worktree.
 
-- [ ] **Step 1: Run whitespace validation**
+- [ ] **Step 1: Validate diffs**
 
 ```bash
 git diff --check HEAD~2..HEAD
@@ -395,11 +257,11 @@ xcodebuild -project cmux.xcodeproj -scheme cmux -configuration Debug \
 
 Expected: `** BUILD SUCCEEDED **`.
 
-- [ ] **Step 3: Confirm commit and worktree state**
+- [ ] **Step 3: Confirm worktree state**
 
 ```bash
 git status --short --branch
-git log -3 --oneline
+git log -4 --oneline
 ```
 
-Expected: no uncommitted source or test changes; the latest implementation commits describe strict Option-as-Alt routing.
+Expected: no uncommitted source or test changes; the latest commits contain the strict routing model and implementation.
