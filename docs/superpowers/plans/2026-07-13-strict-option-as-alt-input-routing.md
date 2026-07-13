@@ -161,6 +161,8 @@ git commit -m "test: define strict Option-as-Alt routing"
 
 **Files:**
 - Modify: `Sources/GhosttyTerminalView.swift`
+- Modify: `Sources/GhosttyNSView+IMEComposition.swift`
+- Test: `cmuxTests/CJKIMEInputTests.swift`
 
 **Interfaces:**
 - Consumes: `cmuxOptionKeyInputRoute(event:originalMods:ghosttyTranslationMods:translationFlags:)`, `ghosttyKeyEvent(for:surface:)`, `shouldSendText(_:)`, and `sendGhosttyKey(_:_:)`.
@@ -206,23 +208,30 @@ After constructing `translationEvent`, switch on the tested route before constru
 
 The unconditional return is required: strict Option-as-Alt input must not fall back to AppKit when Ghostty returns false.
 
-- [ ] **Step 2: Run routing and neighboring regression tests**
+- [ ] **Step 2: Remove the obsolete configured-Alt dead-key regression**
+
+Delete `DeadKeyCompositionRegressionTests.testOptionTildeDeadKeyUsesOriginalEventBeforeAltTranslation()` from `cmuxTests/CJKIMEInputTests.swift`. Its assertion that configured Alt-N must compose `ã` is the behavior this change intentionally removes. Retained Option composition remains covered by `optionRetainedForCompositionUsesAppKit` and the keyboard-layout composition tests.
+
+The direct branch makes `textInputInterpretationEvent` unreachable for an Option side whose Alt modifier Ghostty removed. Replace its only call with `translationEvent` and remove the obsolete helper from `Sources/GhosttyNSView+IMEComposition.swift`.
+
+- [ ] **Step 3: Run routing and neighboring IME regression tests**
 
 ```bash
 xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
   -derivedDataPath build/strict-option-as-alt-tests -destination 'platform=macOS' \
   CMUX_SKIP_ZIG_BUILD=1 \
   -only-testing:cmuxTests/GhosttyOptionAsAltModsTests \
-  -only-testing:cmuxTests/DeadKeyCompositionRegressionTests \
   -only-testing:cmuxTests/TraditionalChineseIMENumpadRegressionTests test
 ```
 
-Expected: all selected suites pass. The routing suite proves E/N direct routing and the existing suites prove retained Option composition and non-Option IME behavior.
+Expected: all selected suites pass. The routing suite proves E/N direct routing and retained Option composition; the existing IME suite proves non-Option Chinese input remains unchanged.
 
-- [ ] **Step 3: Commit the direct routing implementation**
+- [ ] **Step 4: Commit the direct routing implementation**
 
 ```bash
-git add Sources/GhosttyTerminalView.swift
+git add Sources/GhosttyTerminalView.swift Sources/GhosttyNSView+IMEComposition.swift \
+  cmuxTests/CJKIMEInputTests.swift \
+  docs/superpowers/plans/2026-07-13-strict-option-as-alt-input-routing.md
 git commit -m "fix: route Option-as-Alt directly to Ghostty"
 ```
 
@@ -233,7 +242,9 @@ git commit -m "fix: route Option-as-Alt directly to Ghostty"
 **Files:**
 - Verify: `Sources/GhosttyKeyModifiers.swift`
 - Verify: `Sources/GhosttyTerminalView.swift`
+- Verify: `Sources/GhosttyNSView+IMEComposition.swift`
 - Verify: `cmuxTests/GhosttyOptionAsAltModsTests.swift`
+- Verify: `cmuxTests/CJKIMEInputTests.swift`
 
 **Interfaces:**
 - Consumes: completed routing model and keyDown integration.
@@ -252,7 +263,7 @@ Expected: no output and exit status 0.
 ```bash
 xcodebuild -project cmux.xcodeproj -scheme cmux -configuration Debug \
   -derivedDataPath build/strict-option-as-alt-app -destination 'platform=macOS' \
-  CODE_SIGNING_ALLOWED=NO build
+  CODE_SIGNING_ALLOWED=NO CMUX_SKIP_ZIG_BUILD=1 build
 ```
 
 Expected: `** BUILD SUCCEEDED **`.

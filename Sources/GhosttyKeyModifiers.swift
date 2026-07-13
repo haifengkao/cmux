@@ -73,6 +73,8 @@ nonisolated func cmuxTranslationModifierFlags(
     return translationMods
 }
 
+/// Selects whether Option input belongs to AppKit composition or Ghostty's
+/// strict Alt/Meta path.
 enum CmuxOptionKeyInputRoute: Equatable {
     case appKit
     case ghostty(text: String?)

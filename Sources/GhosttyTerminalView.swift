@@ -5809,7 +5809,8 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
 
         // Translate mods to respect Ghostty config (e.g., macos-option-as-alt)
-        let translationModsGhostty = ghostty_surface_key_translation_mods(surface, modsFromEvent(event))
+        let originalMods = modsFromEvent(event)
+        let translationModsGhostty = ghostty_surface_key_translation_mods(surface, originalMods)
         let translationMods = cmuxTranslationModifierFlags(
             original: event.modifierFlags,
             ghosttyTranslationMods: translationModsGhostty
@@ -5832,10 +5833,35 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 keyCode: event.keyCode
             ) ?? event
         }
-        let textInputEvent = textInputInterpretationEvent(
-            original: event,
-            translated: translationEvent
-        )
+
+        // A configured Option-as-Alt key must reach Ghostty before AppKit can
+        // turn it into a dead key or composed character.
+        switch cmuxOptionKeyInputRoute(
+            event: event,
+            originalMods: originalMods,
+            ghosttyTranslationMods: translationModsGhostty,
+            translationFlags: translationMods
+        ) {
+        case .appKit:
+            break
+        case .ghostty(let directText):
+            var keyEvent = ghosttyKeyEvent(for: event, surface: surface)
+            keyEvent.action = action
+            keyEvent.composing = false
+
+            if let directText, shouldSendText(directText) {
+                directText.withCString { ptr in
+                    keyEvent.text = ptr
+                    _ = sendGhosttyKey(surface, keyEvent)
+                }
+            } else {
+                keyEvent.text = nil
+                _ = sendGhosttyKey(surface, keyEvent)
+            }
+            return
+        }
+
+        let textInputEvent = translationEvent
 
         // Set up text accumulator for interpretKeyEvents
         keyTextAccumulator = []
