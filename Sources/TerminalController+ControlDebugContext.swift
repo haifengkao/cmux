@@ -74,8 +74,18 @@ extension TerminalController: ControlDebugContext {
 
     func controlDebugActivateApp() -> String { activateApp() }
 
+    func controlDebugRequestWorkspaceTodoChecklistAddField() -> UUID? {
+        guard let workspace = tabManager?.selectedWorkspace else { return nil }
+        WorkspaceTodoActions.requestChecklistAddField(workspaceId: workspace.id)
+        return workspace.id
+    }
+
     func controlDebugShowProWelcomeChecklist() {
         ProWelcomeChecklistPresenter.present()
+    }
+
+    func controlDebugShowNativePricing() {
+        ProUpgradePresenter.presentNativePricingPreview()
     }
 
     func controlDebugIsTerminalFocused(surfaceArgument: String) -> String {
@@ -113,8 +123,6 @@ extension TerminalController: ControlDebugContext {
     func controlDebugPanelSnapshotReset(surfaceArgument: String) -> String {
         panelSnapshotReset(surfaceArgument)
     }
-
-    func controlDebugCaptureScreenshot(label: String) -> String { captureScreenshot(label) }
 
     func controlDebugShowCanvasCommandScrollHint(
         routing: ControlRoutingSelectors
@@ -430,6 +438,10 @@ extension TerminalController: ControlDebugContext {
 
     func controlDebugPortalStats() -> JSONValue? {
         JSONValue(foundationObject: TerminalWindowPortalRegistry.debugPortalStats())
+    }
+
+    func controlDebugRemoteTmuxSizingSettled() -> JSONValue? {
+        JSONValue(foundationObject: remoteTmuxSizingSettlementPayload())
     }
 #endif
 }
